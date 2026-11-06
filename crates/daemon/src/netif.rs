@@ -117,6 +117,7 @@ async fn refresh_public(app: &App) {
             checked: Some(now()),
             error: None,
             capturing: capturing.contains(&i.name),
+            location: None,
         };
         if has_v4 {
             match public_ip(&i.name, "https://api.ipify.org").await {
@@ -135,6 +136,10 @@ async fn refresh_public(app: &App) {
                 info.geo_v6 = ip.parse().ok().and_then(|ip| app.geo.lookup(ip));
                 info.public_ipv6 = Some(ip);
             }
+        }
+        let ip = info.public_ipv4.clone().or(info.public_ipv6.clone());
+        if let Some(ip) = ip {
+            info.location = locate(app, &ip).await;
         }
         out.push(info);
     }
@@ -156,4 +161,37 @@ pub async fn run(app: Arc<App>) {
             _ = app.recheck_ip.notified() => { last_public = 0; }
         }
     }
+}
+
+/// Approximate (city-level) location of one of *your own* public IPs, from
+/// ipinfo.io. Only your public addresses are sent, once per address.
+async fn locate(app: &App, ip: &str) -> Option<portward_core::model::Location> {
+    if let Some(l) = app.locations.lock().get(ip) {
+        return Some(l.clone());
+    }
+    let v: serde_json::Value = app
+        .http_plain
+        .get(format!("https://ipinfo.io/{ip}/json"))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .text()
+        .await
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())?;
+    let (lat, lon) = v.get("loc")?.as_str()?.split_once(',')?;
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+    let loc = portward_core::model::Location {
+        city: s("city"),
+        region: s("region"),
+        country: s("country"),
+        lat: lat.trim().parse().ok()?,
+        lon: lon.trim().parse().ok()?,
+        org: s("org"),
+    };
+    app.locations.lock().insert(ip.to_string(), loc.clone());
+    Some(loc)
 }

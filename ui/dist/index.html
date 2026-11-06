@@ -4,15 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Portward</title>
+  <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <div id="splash" aria-hidden="true"><div class="splash-in"><img src="icon.png" alt="" />
+    <svg class="wordmark" viewBox="-4 -4 600 108" fill="none" stroke-linejoin="round" aria-label="Portward"><g transform="translate(0,0)" class="wm-red"><path d="M9,93 V7 H33 A24,24 0 0 1 33,55 H9" stroke="#ff2a36" stroke-width="18"/><path d="M9,93 V7 H33 A24,24 0 0 1 33,55 H9" stroke="var(--groove)" stroke-width="3.2"/></g><g transform="translate(70,0)" class="wm-white"><path d="M33,7 H35 A24,24 0 0 1 59,31 V69 A24,24 0 0 1 35,93 H33 A24,24 0 0 1 9,69 V31 A24,24 0 0 1 33,7 Z" stroke="#f4f4f4" stroke-width="18"/><path d="M33,7 H35 A24,24 0 0 1 59,31 V69 A24,24 0 0 1 35,93 H33 A24,24 0 0 1 9,69 V31 A24,24 0 0 1 33,7 Z" stroke="var(--groove)" stroke-width="3.2"/></g><g transform="translate(148,0)" class="wm-white"><path d="M9,93 V7 H33 A24,24 0 0 1 33,55 H9 M30,55 L57,93" stroke="#f4f4f4" stroke-width="18"/><path d="M9,93 V7 H33 A24,24 0 0 1 33,55 H9 M30,55 L57,93" stroke="var(--groove)" stroke-width="3.2"/></g><g transform="translate(220,0)" class="wm-white"><path d="M3,7 H57 M30,7 V93" stroke="#f4f4f4" stroke-width="18"/><path d="M3,7 H57 M30,7 V93" stroke="var(--groove)" stroke-width="3.2"/></g><g transform="translate(290,0)" class="wm-white"><path d="M5,7 L22,93 L40,30 L58,93 L75,7" stroke="#f4f4f4" stroke-width="18"/><path d="M5,7 L22,93 L40,30 L58,93 L75,7" stroke="var(--groove)" stroke-width="3.2"/></g><g transform="translate(380,0)" class="wm-white"><path d="M5,93 L33,7 L61,93 M16,64 H50" stroke="#f4f4f4" stroke-width="18"/><path d="M5,93 L33,7 L61,93 M16,64 H50" stroke="var(--groove)" stroke-width="3.2"/></g><g transform="translate(456,0)" class="wm-white"><path d="M9,93 V7 H33 A24,24 0 0 1 33,55 H9 M30,55 L57,93" stroke="#f4f4f4" stroke-width="18"/><path d="M9,93 V7 H33 A24,24 0 0 1 33,55 H9 M30,55 L57,93" stroke="var(--groove)" stroke-width="3.2"/></g><g transform="translate(528,0)" class="wm-white"><path d="M9,7 H31 A26,26 0 0 1 57,33 V67 A26,26 0 0 1 31,93 H9 Z" stroke="#f4f4f4" stroke-width="18"/><path d="M9,7 H31 A26,26 0 0 1 57,33 V67 A26,26 0 0 1 31,93 H9 Z" stroke="var(--groove)" stroke-width="3.2"/></g></svg></div></div>
   <div class="titlebar" data-tauri-drag-region></div>
   <aside class="sidebar" data-tauri-drag-region>
-    <div class="brand" data-tauri-drag-region>
-      <img src="icon.png" alt="" />
-      <span>Portward</span>
-    </div>
     <nav id="nav">
       <a data-page="dashboard"><svg viewBox="0 0 24 24"><path d="M3 13h8V3H3zm0 8h8v-6H3zm10 0h8V11h-8zm0-18v6h8V3z"/></svg>Painel</a>
       <a data-page="exposure"><svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.7 7.6 1 12c1.7 4.4 6 7.5 11 7.5s9.3-3.1 11-7.5c-1.7-4.4-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>Quem vê seu IP</a>
@@ -26,6 +25,7 @@
   </aside>
   <main id="main" data-tauri-drag-region></main>
   <div id="toast"></div>
+  <script src="world.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

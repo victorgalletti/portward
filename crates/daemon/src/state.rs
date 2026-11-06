@@ -30,6 +30,25 @@ pub struct Flow {
     pub sni: Option<String>,
 }
 
+/// One captured packet, summarised (Wireshark-style list entry).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PacketRec {
+    pub id: u64,
+    /// Unix time with milliseconds.
+    pub t: f64,
+    pub iface: String,
+    pub outbound: bool,
+    pub proto: &'static str,
+    pub local: String,
+    pub remote: String,
+    pub len: u32,
+    pub ttl: u8,
+    pub flags: String,
+    pub info: String,
+    /// First bytes of the IP packet, hex.
+    pub hex: String,
+}
+
 pub struct CacheEntry {
     pub msg: hickory_proto::op::Message,
     pub expires: Instant,
@@ -81,6 +100,11 @@ pub struct App {
     pub interfaces: RwLock<Vec<portward_core::model::InterfaceInfo>>,
     pub capture_ifaces: RwLock<Vec<String>>,
     pub recheck_ip: Notify,
+    /// app path ("" = everything) → last hour of 10 s traffic buckets.
+    pub traffic: Mutex<HashMap<String, VecDeque<portward_core::model::TrafficBucket>>>,
+    pub packets: Mutex<VecDeque<PacketRec>>,
+    pub packet_seq: std::sync::atomic::AtomicU64,
+    pub locations: Mutex<HashMap<String, portward_core::model::Location>>,
     pub shutdown: Notify,
 }
 
@@ -132,6 +156,35 @@ impl App {
         q.push_back(ev);
         while q.len() > 5000 {
             q.pop_front();
+        }
+    }
+}
+
+impl App {
+    pub fn add_traffic(&self, app_path: &str, bin: u64, bout: u64, new_conn: bool) {
+        if bin == 0 && bout == 0 && !new_conn {
+            return;
+        }
+        let t = now() / 10 * 10;
+        let mut tr = self.traffic.lock();
+        for key in ["", app_path] {
+            let q = tr.entry(key.to_string()).or_default();
+            if q.back().map(|b| b.t) != Some(t) {
+                q.push_back(portward_core::model::TrafficBucket { t, ..Default::default() });
+                while q.len() > 360 {
+                    q.pop_front();
+                }
+            }
+            let b = q.back_mut().unwrap();
+            b.bytes_in += bin;
+            b.bytes_out += bout;
+            if new_conn {
+                b.new_connections += 1;
+            }
+        }
+        if tr.len() > 2000 {
+            let cutoff = t - 3600;
+            tr.retain(|k, q| k.is_empty() || q.back().map(|b| b.t > cutoff).unwrap_or(false));
         }
     }
 }

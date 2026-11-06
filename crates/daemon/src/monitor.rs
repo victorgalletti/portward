@@ -95,7 +95,19 @@ fn scan(app: &App, socks: Vec<SockEntry>) {
         (iface, exposed, via_vpn)
     };
 
-    for s in socks.iter().filter(|s| !s.is_listener() && !s.remote.ip().is_unspecified()) {
+    // Network extensions (antivirus web filters, VPN split tunnels) re-open
+    // other apps' flows with the very same addresses. Credit those flows to the
+    // real app and hide the extension's copy.
+    let is_ext = |pid: i32| procinfo::process_info(pid).path.contains("/Library/SystemExtensions/");
+    let owned_by_apps: HashSet<(Proto, std::net::SocketAddr, std::net::SocketAddr)> = socks
+        .iter()
+        .filter(|s| !s.is_listener() && !is_ext(s.pid))
+        .map(|s| (s.proto, s.local, s.remote))
+        .collect();
+
+    for s in socks.iter().filter(|s| {
+        !s.is_listener() && !s.remote.ip().is_unspecified() && !(is_ext(s.pid) && owned_by_apps.contains(&(s.proto, s.local, s.remote)))
+    }) {
         let id = format!("{}|{}|{}|{}", s.proto.as_str(), s.local, s.remote, s.pid);
         seen.insert(id.clone());
         let flow = flows.get(&(s.proto, s.local, s.remote));
@@ -104,6 +116,7 @@ fn scan(app: &App, socks: Vec<SockEntry>) {
             c.active = true;
             c.state = s.state.to_string();
             if let Some(f) = flow {
+                app.add_traffic(&c.process.app_path, f.bytes_in.saturating_sub(c.bytes_in), f.bytes_out.saturating_sub(c.bytes_out), false);
                 c.bytes_in = f.bytes_in;
                 c.bytes_out = f.bytes_out;
                 if let Some(sni) = &f.sni {
@@ -113,7 +126,7 @@ fn scan(app: &App, socks: Vec<SockEntry>) {
             if c.domain.is_none() {
                 c.domain = ip_domains.get(&s.remote.ip()).map(|(d, _)| d.clone());
             }
-            if c.geo.is_none() && c.scope == "internet" {
+            if c.geo.as_ref().map(|g| g.country.is_none()).unwrap_or(true) && c.scope == "internet" {
                 c.geo = app.geo.lookup(s.remote.ip());
             }
             if c.exposed_ip.is_none() && c.scope == "internet" {
@@ -152,6 +165,7 @@ fn scan(app: &App, socks: Vec<SockEntry>) {
             exposed_ip,
             via_vpn,
         };
+        app.add_traffic(&c.process.app_path, c.bytes_in, c.bytes_out, true);
         new_conns.push(c.clone());
         conns.insert(id, c);
     }

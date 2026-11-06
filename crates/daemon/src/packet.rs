@@ -19,6 +19,22 @@ pub struct Pkt<'a> {
     /// IP packet length (header + payload), what the wire carried.
     pub len: u32,
     pub payload: &'a [u8],
+    /// TCP flags (FIN=1 SYN=2 RST=4 PSH=8 ACK=16), 0 for UDP.
+    pub flags: u8,
+    /// IPv4 TTL / IPv6 hop limit.
+    pub ttl: u8,
+    /// The whole IP packet as captured (for the hex view).
+    pub raw: &'a [u8],
+}
+
+pub fn flag_names(f: u8) -> String {
+    let mut v = vec![];
+    for (bit, n) in [(2, "SYN"), (16, "ACK"), (8, "PSH"), (1, "FIN"), (4, "RST")] {
+        if f & bit != 0 {
+            v.push(n);
+        }
+    }
+    v.join(", ")
 }
 
 /// Strips the link layer and returns the IP packet.
@@ -47,7 +63,7 @@ pub fn link_to_ip(linktype: i32, data: &[u8]) -> Option<&[u8]> {
 
 pub fn parse_ip(ip: &[u8]) -> Option<Pkt<'_>> {
     let ver = ip.first()? >> 4;
-    let (src, dst, proto, l4, len) = match ver {
+    let (src, dst, proto, l4, len, ttl) = match ver {
         4 => {
             let ihl = ((ip[0] & 0x0f) as usize) * 4;
             if ip.len() < 20 || ihl < 20 {
@@ -62,7 +78,7 @@ pub fn parse_ip(ip: &[u8]) -> Option<Pkt<'_>> {
             let src = IpAddr::V4(Ipv4Addr::new(ip[12], ip[13], ip[14], ip[15]));
             let dst = IpAddr::V4(Ipv4Addr::new(ip[16], ip[17], ip[18], ip[19]));
             let end = total.min(ip.len()).max(ihl);
-            (src, dst, ip[9], ip.get(ihl..end)?, total as u32)
+            (src, dst, ip[9], ip.get(ihl..end)?, total as u32, ip[8])
         }
         6 => {
             if ip.len() < 40 {
@@ -80,7 +96,7 @@ pub fn parse_ip(ip: &[u8]) -> Option<Pkt<'_>> {
                 off += (*ip.get(off + 1)? as usize + 1) * 8;
             }
             let end = (40 + plen).min(ip.len()).max(off);
-            (IpAddr::V6(Ipv6Addr::from(s)), IpAddr::V6(Ipv6Addr::from(d)), next, ip.get(off..end)?, (40 + plen) as u32)
+            (IpAddr::V6(Ipv6Addr::from(s)), IpAddr::V6(Ipv6Addr::from(d)), next, ip.get(off..end)?, (40 + plen) as u32, ip[7])
         }
         _ => return None,
     };
@@ -96,6 +112,9 @@ pub fn parse_ip(ip: &[u8]) -> Option<Pkt<'_>> {
                 dst: SocketAddr::new(dst, u16::from_be_bytes([l4[2], l4[3]])),
                 len,
                 payload: l4.get(doff..).unwrap_or(&[]),
+                flags: l4[13],
+                ttl,
+                raw: ip,
             })
         }
         17 => {
@@ -108,6 +127,9 @@ pub fn parse_ip(ip: &[u8]) -> Option<Pkt<'_>> {
                 dst: SocketAddr::new(dst, u16::from_be_bytes([l4[2], l4[3]])),
                 len,
                 payload: &l4[8..],
+                flags: 0,
+                ttl,
+                raw: ip,
             })
         }
         _ => None,
@@ -184,7 +206,7 @@ mod tests {
     #[test]
     fn utun_ipv6_tcp() {
         let mut ip = vec![0x60, 0, 0, 0, 0, 20, 6, 64];
-        ip.extend("2804:214::1".parse::<Ipv6Addr>().unwrap().octets());
+        ip.extend("2001:db8::1".parse::<Ipv6Addr>().unwrap().octets());
         ip.extend("2606:4700::1111".parse::<Ipv6Addr>().unwrap().octets());
         let mut tcp = vec![0u8; 20];
         tcp[0..2].copy_from_slice(&50000u16.to_be_bytes());

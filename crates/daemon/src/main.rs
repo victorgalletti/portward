@@ -180,6 +180,10 @@ async fn run(
         interfaces: Default::default(),
         capture_ifaces: Default::default(),
         recheck_ip: Default::default(),
+        traffic: Default::default(),
+        packets: Default::default(),
+        packet_seq: Default::default(),
+        locations: Default::default(),
         shutdown: Default::default(),
     });
     let filter_mode = cfg.mode == portward_core::config::Mode::Filter;

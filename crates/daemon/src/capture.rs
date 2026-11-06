@@ -8,7 +8,7 @@
 
 use crate::packet::{link_to_ip, parse_ip, parse_sni};
 use crate::procinfo::{self, Proto};
-use crate::state::{now, App, Flow, FlowKey};
+use crate::state::{now, App, Flow, FlowKey, PacketRec};
 use hickory_proto::op::{Message, MessageType};
 use hickory_proto::rr::RData;
 use portward_core::config::Mode;
@@ -68,6 +68,89 @@ struct Local {
     flows: HashMap<FlowKey, Flow>,
     names: Vec<(IpAddr, String)>,
     events: Vec<DnsEvent>,
+    packets: Vec<PacketRec>,
+}
+
+const MAX_PACKETS: usize = 20_000;
+const HEX_BYTES: usize = 128;
+
+fn hex(b: &[u8]) -> String {
+    b.iter().take(HEX_BYTES).map(|x| format!("{x:02x}")).collect()
+}
+
+/// Human summary of a packet, like Wireshark's "Info" column.
+fn info_of(pkt: &crate::packet::Pkt<'_>, local_port: u16, remote_port: u16) -> String {
+    use crate::packet::flag_names;
+    let p = pkt.payload;
+    match pkt.proto {
+        Proto::Tcp => {
+            let ports = format!("{} → {}", pkt.src.port(), pkt.dst.port());
+            let fl = flag_names(pkt.flags);
+            let what = if p.len() >= 6 && p[0] == 0x16 && p[1] == 0x03 {
+                match p[5] {
+                    1 => match parse_sni(p) {
+                        Some(s) => format!("TLS ClientHello · SNI {s}"),
+                        None => "TLS ClientHello".into(),
+                    },
+                    2 => "TLS ServerHello".into(),
+                    _ => "TLS handshake".into(),
+                }
+            } else if p.len() >= 3 && p[0] == 0x17 && p[1] == 0x03 {
+                format!("TLS dados criptografados ({} bytes)", p.len())
+            } else if p.len() >= 3 && p[0] == 0x15 && p[1] == 0x03 {
+                "TLS alerta".into()
+            } else if p.starts_with(b"GET ") || p.starts_with(b"POST ") || p.starts_with(b"HTTP/") {
+                let line = p.split(|&b| b == b'\r').next().unwrap_or(&[]);
+                format!("HTTP {}", String::from_utf8_lossy(&line[..line.len().min(80)]))
+            } else if !p.is_empty() {
+                format!("{} bytes de dados", p.len())
+            } else {
+                String::new()
+            };
+            [ports, if fl.is_empty() { String::new() } else { format!("[{fl}]") }, what]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+        Proto::Udp => {
+            let port = if remote_port == 53 || local_port == 53 { 53 } else { remote_port.min(local_port.max(remote_port)) };
+            if remote_port == 53 || local_port == 53 {
+                match Message::from_vec(p) {
+                    Ok(m) => {
+                        let q = m.queries.first().map(|q| format!("{} {}", q.query_type(), normalize_domain(&q.name().to_ascii()))).unwrap_or_default();
+                        if m.metadata.message_type == MessageType::Response {
+                            let first = m.answers.iter().find_map(|r| match &r.data {
+                                RData::A(a) => Some(a.0.to_string()),
+                                RData::AAAA(a) => Some(a.0.to_string()),
+                                RData::CNAME(c) => Some(format!("CNAME {}", normalize_domain(&c.0.to_ascii()))),
+                                _ => None,
+                            });
+                            format!("DNS resposta {q}{}", first.map(|f| format!(" → {f}")).unwrap_or_default())
+                        } else {
+                            format!("DNS consulta {q}")
+                        }
+                    }
+                    Err(_) => "DNS (malformado)".into(),
+                }
+            } else if remote_port == 443 || local_port == 443 {
+                match p.first() {
+                    Some(b) if b & 0x80 != 0 => match (b >> 4) & 0x3 {
+                        0 => "QUIC Initial (início de conexão)".into(),
+                        2 => "QUIC Handshake".into(),
+                        _ => "QUIC (cabeçalho longo)".into(),
+                    },
+                    Some(_) => format!("QUIC dados criptografados ({} bytes)", p.len()),
+                    None => "QUIC".into(),
+                }
+            } else if remote_port == 123 {
+                "NTP (hora)".into()
+            } else {
+                let _ = port;
+                format!("UDP {} → {} · {} bytes", pkt.src.port(), pkt.dst.port(), p.len())
+            }
+        }
+    }
 }
 
 fn capture_iface(app: &App, name: &str, stop: &AtomicBool) -> anyhow::Result<()> {
@@ -95,14 +178,14 @@ fn capture_iface(app: &App, name: &str, stop: &AtomicBool) -> anyhow::Result<()>
             Err(e) => return Err(e.into()),
         }
         if last_flush.elapsed() >= FLUSH {
-            flush(app, &mut local);
+            flush(app, &mut local, name);
             locals = app.local_ips.read().keys().copied().collect();
             let cutoff = Instant::now() - Duration::from_secs(10);
             pending.retain(|_, (t, _)| *t > cutoff);
             last_flush = Instant::now();
         }
     }
-    flush(app, &mut local);
+    flush(app, &mut local, name);
     Ok(())
 }
 
@@ -121,6 +204,22 @@ fn handle(
         return;
     };
     let (l, r) = if outbound { (pkt.src, pkt.dst) } else { (pkt.dst, pkt.src) };
+    if local.packets.len() < 4000 {
+        local.packets.push(PacketRec {
+            id: 0,
+            t: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0),
+            iface: String::new(),
+            outbound,
+            proto: pkt.proto.as_str(),
+            local: l.to_string(),
+            remote: r.to_string(),
+            len: pkt.len,
+            ttl: pkt.ttl,
+            flags: crate::packet::flag_names(pkt.flags),
+            info: info_of(&pkt, l.port(), r.port()),
+            hex: hex(pkt.raw),
+        });
+    }
     let f = local.flows.entry((pkt.proto, l, r)).or_default();
     if outbound {
         f.bytes_out += pkt.len as u64;
@@ -200,7 +299,18 @@ fn dns_answer(app: &App, local: &mut Local, pending: &mut HashMap<(u16, u16), (I
     });
 }
 
-fn flush(app: &App, local: &mut Local) {
+fn flush(app: &App, local: &mut Local, iface: &str) {
+    if !local.packets.is_empty() {
+        let mut ring = app.packets.lock();
+        for mut p in local.packets.drain(..) {
+            p.id = app.packet_seq.fetch_add(1, Ordering::Relaxed) + 1;
+            p.iface = iface.to_string();
+            ring.push_back(p);
+        }
+        while ring.len() > MAX_PACKETS {
+            ring.pop_front();
+        }
+    }
     if !local.flows.is_empty() {
         let mut flows = app.flows.lock();
         for (k, f) in local.flows.drain() {

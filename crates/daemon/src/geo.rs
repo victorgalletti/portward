@@ -1,14 +1,14 @@
-//! Country and network owner (ASN) of IP addresses, from the free DB-IP Lite
-//! databases (CC BY 4.0, https://db-ip.com). Downloaded once a month; all
-//! lookups are local, no IP ever leaves the machine.
+//! City/country and network owner (ASN) of IP addresses, from the free DB-IP
+//! Lite databases (CC BY 4.0, https://db-ip.com). Downloaded once a month; all
+//! lookups are local, no IP ever leaves the machine. The city database is
+//! memory-mapped so only the pages that are looked up are read.
 
 use crate::state::App;
-use maxminddb::Reader;
+use maxminddb::{Mmap, Reader};
 use parking_lot::{Mutex, RwLock};
 use portward_core::model::GeoInfo;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
-use std::io::Read;
 use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -17,19 +17,29 @@ use tracing::{info, warn};
 
 #[derive(Default)]
 pub struct Geo {
-    country: RwLock<Option<Reader<Vec<u8>>>>,
+    city: RwLock<Option<Reader<Mmap>>>,
     asn: RwLock<Option<Reader<Vec<u8>>>>,
     cache: Mutex<HashMap<IpAddr, GeoInfo>>,
 }
 
 #[derive(Deserialize)]
-struct CountryRec {
-    country: Option<CountryInner>,
+struct CityRec {
+    country: Option<Named>,
+    city: Option<Named>,
+    location: Option<Loc>,
 }
 #[derive(Deserialize)]
-struct CountryInner {
+struct Named {
     iso_code: Option<String>,
     names: Option<BTreeMap<String, String>>,
+}
+#[derive(Deserialize)]
+struct Loc {
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+}
+fn name_of(n: &Named) -> Option<String> {
+    n.names.as_ref().and_then(|m| m.get("pt-BR").or_else(|| m.get("en")).cloned())
 }
 #[derive(Deserialize)]
 struct AsnRec {
@@ -50,11 +60,16 @@ impl Geo {
             return Some(g.clone());
         }
         let mut g = GeoInfo::default();
-        if let Some(r) = self.country.read().as_ref() {
-            if let Ok(Some(rec)) = r.lookup(ip).and_then(|l| l.decode::<CountryRec>()) {
-                if let Some(c) = rec.country {
-                    g.country_name = c.names.as_ref().and_then(|n| n.get("pt-BR").or_else(|| n.get("en")).cloned());
-                    g.country = c.iso_code;
+        if let Some(r) = self.city.read().as_ref() {
+            if let Ok(Some(rec)) = r.lookup(ip).and_then(|l| l.decode::<CityRec>()) {
+                if let Some(c) = &rec.country {
+                    g.country_name = name_of(c);
+                    g.country = c.iso_code.clone();
+                }
+                g.city = rec.city.as_ref().and_then(name_of);
+                if let Some(l) = rec.location {
+                    g.lat = l.latitude;
+                    g.lon = l.longitude;
                 }
             }
         }
@@ -76,8 +91,10 @@ impl Geo {
     }
 
     fn load(&self, dir: &Path) {
-        if let Ok(r) = Reader::open_readfile(dir.join("dbip-country.mmdb")) {
-            *self.country.write() = Some(r);
+        // SAFETY: the file is only ever replaced by an atomic rename, so the
+        // mapped inode never changes under us.
+        if let Ok(r) = unsafe { Reader::open_mmap(dir.join("dbip-city.mmdb")) } {
+            *self.city.write() = Some(r);
         }
         if let Ok(r) = Reader::open_readfile(dir.join("dbip-asn.mmdb")) {
             *self.asn.write() = Some(r);
@@ -86,7 +103,7 @@ impl Geo {
     }
 
     pub fn loaded(&self) -> bool {
-        self.country.read().is_some()
+        self.city.read().is_some()
     }
 }
 
@@ -108,11 +125,15 @@ async fn download(app: &App, kind: &str) -> anyhow::Result<()> {
         match app.http_plain.get(&url).send().await.and_then(|r| r.error_for_status()) {
             Ok(resp) => {
                 let gz = resp.bytes().await?;
-                let mut out = Vec::new();
-                flate2::read::GzDecoder::new(&gz[..]).read_to_end(&mut out)?;
-                Reader::from_source(out.clone())?; // validate
                 let tmp = dest.with_extension("tmp");
-                std::fs::write(&tmp, out)?;
+                {
+                    let mut f = std::fs::File::create(&tmp)?;
+                    std::io::copy(&mut flate2::read::GzDecoder::new(&gz[..]), &mut f)?;
+                }
+                drop(gz);
+                // validate before swapping it in
+                // SAFETY: tmp is ours and not modified while mapped.
+                unsafe { Reader::open_mmap(&tmp)? };
                 std::fs::rename(tmp, &dest)?;
                 info!("downloaded {url}");
                 return Ok(());
@@ -141,7 +162,8 @@ pub async fn run(app: Arc<App>) {
     app.geo.load(&app.data_dir);
     loop {
         let mut changed = false;
-        for kind in ["country", "asn"] {
+        let _ = std::fs::remove_file(app.data_dir.join("dbip-country.mmdb")); // replaced by city
+        for kind in ["city", "asn"] {
             let p = app.data_dir.join(format!("dbip-{kind}.mmdb"));
             if age_days(&p).map(|d| d < 30).unwrap_or(false) {
                 continue;

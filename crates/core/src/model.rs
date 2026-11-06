@@ -57,6 +57,12 @@ pub struct Connection {
 pub struct GeoInfo {
     pub country: Option<String>,
     pub country_name: Option<String>,
+    #[serde(default)]
+    pub city: Option<String>,
+    #[serde(default)]
+    pub lat: Option<f64>,
+    #[serde(default)]
+    pub lon: Option<f64>,
     pub asn: Option<u32>,
     pub org: Option<String>,
 }
@@ -76,6 +82,28 @@ pub struct InterfaceInfo {
     pub checked: Option<i64>,
     pub error: Option<String>,
     pub capturing: bool,
+    /// Approximate location of the public IPv4 (or IPv6), city level.
+    #[serde(default)]
+    pub location: Option<Location>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Location {
+    pub city: Option<String>,
+    pub region: Option<String>,
+    pub country: Option<String>,
+    pub lat: f64,
+    pub lon: f64,
+    pub org: Option<String>,
+}
+
+/// Traffic in one 10-second bucket.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrafficBucket {
+    pub t: i64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub new_connections: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +174,9 @@ pub struct Status {
     pub mode: crate::config::Mode,
     pub capture_interfaces: Vec<String>,
     pub version: String,
+    /// Build identifier (timestamp + git hash) to detect updates.
+    #[serde(default)]
+    pub build: String,
     pub started: i64,
     pub running_as_root: bool,
     pub dns_listen: String,

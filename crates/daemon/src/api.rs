@@ -70,6 +70,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/v1/history/connections", get(history))
         .route("/api/v1/exposure", get(exposure))
         .route("/api/v1/exposure/recheck", post(recheck))
+        .route("/api/v1/traffic", get(traffic))
+        .route("/api/v1/packets", get(packets))
         .layer(middleware::from_fn_with_state(app.clone(), auth))
         .with_state(app)
 }
@@ -89,6 +91,7 @@ async fn status(State(app): S) -> Json<Status> {
         mode: cfg.mode,
         capture_interfaces: app.capture_ifaces.read().clone(),
         version: env!("CARGO_PKG_VERSION").into(),
+        build: option_env!("PORTWARD_BUILD").unwrap_or("dev").into(),
         started: app.started,
         running_as_root: app.root,
         dns_listen: cfg.dns_listen.clone(),
@@ -435,4 +438,71 @@ async fn exposure(State(app): S) -> Json<Value> {
 async fn recheck(State(app): S) -> Json<Value> {
     app.recheck_ip.notify_one();
     Json(json!({ "ok": true }))
+}
+
+#[derive(Deserialize)]
+struct TrafficQ {
+    #[serde(default)]
+    app: String,
+}
+
+/// Last hour of traffic in 10 s buckets, for one app or (app = "") everything.
+async fn traffic(State(app): S, Query(q): Query<TrafficQ>) -> Json<Value> {
+    let tr = app.traffic.lock();
+    Json(json!(tr.get(&q.app).map(|v| v.iter().cloned().collect::<Vec<_>>()).unwrap_or_default()))
+}
+
+#[derive(Deserialize)]
+struct PacketQ {
+    /// Comma separated remote IPs to filter on (a server can have several).
+    #[serde(default)]
+    ips: String,
+    /// Only packets newer than this id (for live tailing).
+    #[serde(default)]
+    after: u64,
+    /// Only packets of connections owned by this app (app path).
+    #[serde(default)]
+    app: String,
+    #[serde(default = "default_pkt_limit")]
+    limit: usize,
+}
+fn default_pkt_limit() -> usize {
+    400
+}
+
+/// Recent captured packets (newest last), each tagged with the app that owns
+/// its connection when known.
+async fn packets(State(app): S, Query(q): Query<PacketQ>) -> Json<Value> {
+    let ips: BTreeSet<String> = q.ips.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let owner: HashMap<String, (String, String)> = app
+        .conns
+        .lock()
+        .values()
+        .map(|c| (format!("{}|{}|{}", c.protocol, c.local, c.remote), (c.process.name.clone(), c.process.app_path.clone())))
+        .collect();
+    let ring = app.packets.lock();
+    let mut out: Vec<Value> = ring
+        .iter()
+        .rev()
+        .filter(|p| p.id > q.after)
+        .filter(|p| q.app.is_empty() || owner.get(&format!("{}|{}|{}", p.proto, p.local, p.remote)).map(|(_, path)| path == &q.app).unwrap_or(false))
+        .filter(|p| {
+            if ips.is_empty() {
+                return true;
+            }
+            let ip = p.remote.rsplit_once(':').map(|(h, _)| h.trim_start_matches('[').trim_end_matches(']')).unwrap_or("");
+            ips.contains(ip)
+        })
+        .take(q.limit.min(5000))
+        .map(|p| {
+            let mut v = json!(p);
+            if let Some((name, path)) = owner.get(&format!("{}|{}|{}", p.proto, p.local, p.remote)) {
+                v["app"] = json!(name);
+                v["app_path"] = json!(path);
+            }
+            v
+        })
+        .collect();
+    out.reverse();
+    Json(json!(out))
 }

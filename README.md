@@ -60,6 +60,9 @@ por mês e consultadas localmente.
 - **App de desktop** (Tauri) com painel, atividade de rede, consultas DNS, listas,
   regras e configurações, mais um ícone na barra de menus para pausar e retomar.
 
+O visual e o comportamento da interface estão documentados em
+[docs/DESIGN.md](docs/DESIGN.md).
+
 ## Arquitetura
 
 ```
@@ -89,6 +92,14 @@ sudo ./scripts/install.sh
 ```
 
 Depois abra `/Applications/Portward.app`.
+
+### Atualizar
+
+`./scripts/build.sh` compila e deixa a versão nova preparada em
+`~/Library/Application Support/Portward/staged`. O app mostra **"Nova versão
+pronta · Instalar atualização"**. Ao clicar, o macOS pede a senha ou o Touch ID,
+e o app reinstala o serviço e reabre sozinho. Sem o app aberto, dê dois cliques
+em `scripts/update.command` no Finder, que faz o mesmo.
 
 Ao iniciar, o serviço anota o DNS atual de cada interface de rede e troca por
 `127.0.0.1`. Ao parar, devolve o original. Para remover tudo:

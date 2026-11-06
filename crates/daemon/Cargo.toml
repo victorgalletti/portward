@@ -26,5 +26,5 @@ parking_lot = "0.12"
 ipnet = "2"
 libc = "0.2"
 pcap = "*"
-maxminddb = "*"
+maxminddb = { version = "0.32", features = ["mmap"] }
 flate2 = "1"

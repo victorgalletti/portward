@@ -122,6 +122,58 @@ async fn app_icon(path: String) -> Option<String> {
     Some(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
+fn staged_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(home).join("Library/Application Support/Portward/staged")
+}
+
+/// A newer build prepared by scripts/build.sh, if any.
+#[tauri::command]
+fn update_info() -> Value {
+    let staged = std::fs::read_to_string(staged_dir().join("build.txt")).ok().and_then(|t| {
+        let mut it = t.split_whitespace();
+        Some(serde_json::json!({ "version": it.next()?, "build": it.next()? }))
+    });
+    serde_json::json!({
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "app_build": option_env!("PORTWARD_BUILD").unwrap_or("dev"),
+        "staged": staged,
+    })
+}
+
+/// Installs the staged build: macOS asks for the admin password / Touch ID,
+/// the daemon and app are replaced, and the app relaunches itself.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = staged_dir();
+    let script = dir.join("install.sh");
+    if !script.exists() {
+        return Err("Nenhuma atualização preparada.".into());
+    }
+    let q = |p: &std::path::Path| p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let apple = format!(
+        "do shell script \"/bin/bash \" & quoted form of \"{}\" & \" --from \" & quoted form of \"{}\" with administrator privileges with prompt \"O Portward quer instalar uma atualização.\"",
+        q(&script),
+        q(&dir)
+    );
+    let out = tauri::async_runtime::spawn_blocking(move || std::process::Command::new("/usr/bin/osascript").args(["-e", &apple]).output())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        if err.contains("-128") {
+            return Err("Instalação cancelada.".into());
+        }
+        return Err(err.trim().to_string());
+    }
+    let _ = std::fs::remove_file(dir.join("build.txt"));
+    // Relaunch the freshly installed app once we've exited.
+    let _ = std::process::Command::new("/bin/sh").args(["-c", "sleep 1; open -n /Applications/Portward.app"]).spawn();
+    app.exit(0);
+    Ok(())
+}
+
 #[tauri::command]
 fn reveal(path: String) {
     let _ = std::process::Command::new("/usr/bin/open").arg("-R").arg(path).spawn();
@@ -137,13 +189,13 @@ fn show_main(app: &tauri::AppHandle) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![api, reveal, app_icon])
+        .invoke_handler(tauri::generate_handler![api, reveal, app_icon, update_info, install_update])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Abrir Portward", true, None::<&str>)?;
             let pause = MenuItem::with_id(app, "pause", "Pausar proteção", true, None::<&str>)?;
             let resume = MenuItem::with_id(app, "resume", "Retomar proteção", true, None::<&str>)?;
             let sep = PredefinedMenuItem::separator(app)?;
-            let quit = MenuItem::with_id(app, "quit", "Fechar janela do Portward", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Sair do Portward", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &sep, &pause, &resume, &sep, &quit])?;
             let mut tray = TrayIconBuilder::with_id("main")
                 .tooltip("Portward")
@@ -159,9 +211,9 @@ fn main() {
                     "quit" => app.exit(0),
                     _ => {}
                 });
-            if let Some(icon) = app.default_window_icon() {
-                tray = tray.icon(icon.clone()).icon_as_template(false);
-            }
+            // Monochrome template image: macOS tints it like every other menu bar icon.
+            let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+            tray = tray.icon(icon).icon_as_template(true);
             tray.build(app)?;
             Ok(())
         })
