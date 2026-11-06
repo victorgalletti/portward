@@ -1,0 +1,30 @@
+[package]
+name = "portward-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "portwardd"
+path = "src/main.rs"
+
+[dependencies]
+portward-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["full"] }
+hickory-proto = "0.26"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
+axum = "0.8"
+rusqlite = { version = "0.41", features = ["bundled"] }
+libproc = "0.15"
+clap = { version = "4", features = ["derive"] }
+parking_lot = "0.12"
+ipnet = "2"
+libc = "0.2"
+pcap = "*"
+maxminddb = "*"
+flate2 = "1"

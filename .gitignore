@@ -1,0 +1,4 @@
+/target
+/dist-pkg
+.DS_Store
+/ui/src-tauri/gen
